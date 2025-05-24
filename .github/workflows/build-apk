@@ -1,0 +1,30 @@
+# ... (existing jobs like spell-check and quality can remain)
+
+  build-apk: # New job for building the APK
+    name: Build Android APK
+    runs-on: ubuntu-latest # Android builds often run on Linux runners
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17 # Or whatever JDK version your project requires
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin' # Or 'zulu', 'adopt' etc.
+          java-version: '17'
+          cache: 'gradle' # Cache Gradle dependencies for faster builds
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew # Important for Unix-like systems
+
+      - name: Build Release APK # Or Debug, depending on your needs
+        run: ./gradlew assembleRelease # This command compiles your app into an APK
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk # Name for the uploaded artifact
+          # The path below is common for Android projects, but verify for your specific project
+          path: app/build/outputs/apk/release/app-release.apk
+          retention-days: 7 # How long to keep the artifact

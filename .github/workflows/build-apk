@@ -1,30 +1,89 @@
-# ... (existing jobs like spell-check and quality can remain)
+name: CI
 
-  build-apk: # New job for building the APK
-    name: Build Android APK
-    runs-on: ubuntu-latest # Android builds often run on Linux runners
+on:
+  push:
+  pull_request:
+
+jobs:
+  spell-check:
+    timeout-minutes: 5
+    name: Check spelling
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Actions Repository
+        uses: actions/checkout@v4
+
+      - name: Check spelling
+        uses: crate-ci/typos@master
+        with:
+          config: ./_typos.toml
+
+  quality:
+    timeout-minutes: 5
+    name: Linting and formatting
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17 # Or whatever JDK version your project requires
-        uses: actions/setup-java@v4
+      - name: Setup Biome
+        uses: biomejs/setup-biome@v2
+
+      - name: Run Biome
+        run: biome ci .
+
+  # New job to build the Android APK using Cordova
+  build-android-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest # Or windows-latest if you prefer, but ubuntu is common for Android builds
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          distribution: 'temurin' # Or 'zulu', 'adopt' etc.
-          java-version: '17'
-          cache: 'gradle' # Cache Gradle dependencies for faster builds
+          node-version: '18' # Use a Node.js version compatible with your project and Cordova
+          cache: 'yarn' # Cache Yarn dependencies for faster builds
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew # Important for Unix-like systems
+      - name: Install Apache Cordova CLI
+        run: npm install -g cordova
 
-      - name: Build Release APK # Or Debug, depending on your needs
-        run: ./gradlew assembleRelease # This command compiles your app into an APK
+      - name: Initial setup (yarn setup)
+        # This assumes 'yarn setup' is in your project's package.json scripts
+        # and prepares the project for building (e.g., installs dependencies, runs pre-build steps)
+        run: yarn setup
 
-      - name: Upload Release APK
+      - name: Add Android platform (if not already added by 'yarn setup' or a similar script)
+        # This step might be redundant if 'yarn setup' already handles 'cordova platform add android'
+        # or if the platform is committed to the repo. Include it if you encounter 'No platforms added' errors.
+        run: cordova platform add android --no-save
+
+      - name: Build Android Release APK
+        # Replace <free|paid> and <p|prod|d|dev> with the actual arguments needed for your project
+        # Example: yarn build android free prod
+        run: yarn build android free prod # Adjust these arguments as per your project's requirements
+
+      - name: Locate and upload APK artifact
+        # The exact path of the APK depends on your Cordova project's structure and build config.
+        # Common path is platforms/android/app/build/outputs/apk/release/app-release.apk
+        # You might need to adjust this path based on your `yarn build` command's output.
+        # The `find` command is robust for locating the APK if the exact path varies.
+        run: |
+          APK_PATH=$(find . -name "*.apk" | grep "release" | head -n 1) # Finds the first release APK
+          if [ -z "$APK_PATH" ]; then
+            echo "Error: No release APK found!"
+            exit 1
+          fi
+          echo "Found APK at: $APK_PATH"
+          echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV # Set as an environment variable for the next step
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-release-apk # Name for the uploaded artifact
-          # The path below is common for Android projects, but verify for your specific project
-          path: app/build/outputs/apk/release/app-release.apk
+          name: android-release-apk
+          path: ${{ env.APK_PATH }} # Use the path found in the previous step
           retention-days: 7 # How long to keep the artifact

@@ -1,13 +1,13 @@
-name: Build Android Apk # The name of your workflow, displayed in GitHub Actions
+name: Build Android Apk
 
 on:
   push:
     branches:
-      - main # Triggers on pushes to the 'main' branch (adjust if your default branch is different, e.g., 'master')
+      - main
   pull_request:
     branches:
-      - main # Triggers on pull requests targeting the 'main' branch
-  workflow_dispatch: # Allows you to manually trigger the workflow from the GitHub Actions UI
+      - main
+  workflow_dispatch:
 
 jobs:
   spell-check:
@@ -40,55 +40,42 @@ jobs:
         run: biome ci .
 
   build-android-apk:
-    name: Build Android APK # The name of this specific job
-    runs-on: ubuntu-latest # The type of runner to use (Ubuntu Linux)
+    name: Build Android APK
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository # Step 1: Get your code from GitHub
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js # Step 2: Install Node.js for Yarn and Cordova
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18' # Ensure this version is compatible with your project and Cordova
-          # Removed the 'cache: yarn' line to fix the previous error
+          node-version: '18'
 
-      - name: Install Apache Cordova CLI # Step 3: Install Cordova globally
+      - name: Install Apache Cordova CLI
         run: npm install -g cordova
 
-      - name: Initial setup (yarn setup) # Step 4: Run your project's setup script
-        # This assumes 'yarn setup' is a script defined in your project's package.json
-        # and handles initial dependencies/configurations.
+      - name: Initial setup (yarn setup)
         run: yarn setup
 
-      - name: Add Android platform (if not already added) # Step 5: Ensure Android platform is added to Cordova
-        # This step is crucial. If your 'yarn setup' or a similar build script
-        # already runs 'cordova platform add android', you might skip this or
-        # adjust it based on your project's needs. The --no-save flag prevents it
-        # from modifying config.xml, which might be useful if you commit platform files.
-        run: cordova platform add android --no-save
+      # --- REMOVED THE "Add Android platform" STEP HERE ---
 
-      - name: Build Android Release APK # Step 6: Run your project's build command
-        # IMPORTANT: Verify 'yarn build android free prod' are the correct arguments
-        # based on your project's documentation.
-        run: yarn build android free prod
+      - name: Build Android Release APK
+        run: yarn build android free prod # Double-check these arguments are correct for your project
 
-      - name: Locate and upload APK artifact # Step 7: Find the generated APK file
-        # This uses 'find' to locate the 'release' APK. Cordova output paths can vary.
-        # It then sets the found path as an environment variable (APK_PATH) for the next step.
+      - name: Locate and upload APK artifact
         run: |
-          # Find the first file ending with .apk and containing "release" in its path.
           APK_PATH=$(find . -name "*.apk" | grep "release" | head -n 1)
           if [ -z "$APK_PATH" ]; then
             echo "Error: No release APK found after build! Check previous steps' logs for build failures."
             exit 1
           fi
           echo "Found APK at: $APK_PATH"
-          echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV # Make APK_PATH available to subsequent steps
+          echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
 
-      - name: Upload APK artifact # Step 8: Upload the found APK as a GitHub Action artifact
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-release-apk # The name of the artifact in GitHub Actions UI
-          path: ${{ env.APK_PATH }} # Use the path found in the previous step
-          retention-days: 7 # How long the artifact will be stored (optional, default is 90 days)
+          name: android-release-apk
+          path: ${{ env.APK_PATH }}
+          retention-days: 7

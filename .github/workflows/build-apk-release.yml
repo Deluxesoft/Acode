@@ -89,7 +89,7 @@ jobs:
 
       - name: Install Bundletool
         run: |
-          # Use a specific version for reliability. Check https://github.com/google/bundletool/releases for the latest stable.
+          # Use a specific version for reliability. Check https://github.com/google/bundletool/releases/download/1.16.0/bundletool-all-1.16.0.jar -O bundletool.jar
           wget https://github.com/google/bundletool/releases/download/1.16.0/bundletool-all-1.16.0.jar -O bundletool.jar
           echo "BUNDLETOOL_JAR=$GITHUB_WORKSPACE/bundletool.jar" >> $GITHUB_ENV
 
@@ -133,6 +133,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # *** ADDED THIS STEP ***
+      - name: Set up Node.js for release job
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18' # Ensure this matches your build job's Node.js version
 
       - name: Get project name and version
         id: project_info

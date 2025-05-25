@@ -59,15 +59,29 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17' # CHANGE THIS FROM '11' TO '17'
-          # This is required because the Android SDK's sdkmanager tool
-          # is compiled with Java 17 (class file version 61.0).
+          java-version: '17' # This is correctly set to 17, which is good!
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v2
-        with:
-          api-level: '33' # Adjust if needed
-          build-tools: '33.0.0' # Adjust if needed
+      # --- START OF CHANGES TO ADDRESS THE WARNING ---
+      - name: Install Android SDK Build Tools and Platforms
+        run: |
+          # Ensure ANDROID_HOME is set for sdkmanager
+          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
+          mkdir -p $HOME/android-sdk/cmdline-tools/latest
+          # Download command-line tools
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-8583971_latest.zip -O android-sdk-cmdline-tools.zip
+          unzip -q android-sdk-cmdline-tools.zip -d $HOME/android-sdk/cmdline-tools/latest
+
+          export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/cmdline-tools/latest/lib:$PATH
+          
+          # Accept SDK licenses
+          yes | sdkmanager --licenses > /dev/null
+
+          # Install specific Android SDK components
+          # Using API level 33 and build tools 33.0.0 as you had previously
+          sdkmanager "platform-tools" "build-tools;33.0.0" "platforms;android-33"
+        env:
+          ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk # This sets where sdkmanager installs
+      # --- END OF CHANGES ---
 
       - name: Initial setup (yarn setup)
         run: yarn setup
@@ -121,4 +135,3 @@ jobs:
           name: android-release-apk
           path: ${{ env.APK_PATH }}
           retention-days: 7
-

@@ -9,8 +9,8 @@ on:
       - main
   workflow_dispatch:
 
-permissions: # <--- ADDED THIS GLOBAL PERMISSIONS BLOCK
-  contents: write # Grants permission to create and edit repository content (needed for releases)
+permissions:
+  contents: write
 
 jobs:
   spell-check:
@@ -92,7 +92,7 @@ jobs:
 
       - name: Install Bundletool
         run: |
-          # Use a specific version for reliability. Check https://github.com/google/bundletool/releases for the latest stable.
+          # Use a specific version for reliability. Check https://github.com/google/bundletool/releases/download/1.16.0/bundletool-all-1.16.0.jar -O bundletool.jar
           wget https://github.com/google/bundletool/releases/download/1.16.0/bundletool-all-1.16.0.jar -O bundletool.jar
           echo "BUNDLETOOL_JAR=$GITHUB_WORKSPACE/bundletool.jar" >> "$GITHUB_ENV"
 
@@ -119,11 +119,37 @@ jobs:
           echo "Found universal APK at: $UNIVERSAL_APK_PATH"
           echo "APK_GENERATED_PATH=$UNIVERSAL_APK_PATH" >> "$GITHUB_OUTPUT"
 
+      # --- NEW STEP: Sign the Universal APK with Debug Key ---
+      - name: Sign Universal APK with Debug Key
+        run: |
+          APK_TO_SIGN="${{ steps.generate_apk_from_aab.outputs.APK_GENERATED_PATH }}"
+          
+          # Find the latest Android build-tools version available on the runner
+          BUILD_TOOLS_VERSION=$(find "$ANDROID_HOME/build-tools" -maxdepth 1 -type d -printf '%f\n' | sort -rV | head -n 1)
+          APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/apksigner"
+
+          if [ ! -f "$APKSIGNER" ]; then
+            echo "Error: apksigner not found at $APKSIGNER. Please check Android SDK setup."
+            exit 1
+          fi
+
+          echo "Signing $APK_TO_SIGN using debug key..."
+          "$APKSIGNER" sign \
+            --ks ~/.android/debug.keystore \
+            --ks-key-alias androiddebugkey \
+            --ks-pass pass:android \
+            "$APK_TO_SIGN"
+
+          # Optional: Verify the APK signature for debugging purposes
+          echo "Verifying APK signature..."
+          "$APKSIGNER" verify "$APK_TO_SIGN"
+          echo "APK signing complete."
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: android-release-apk
-          path: ${{ steps.generate_apk_from_aab.outputs.APK_GENERATED_PATH }}
+          path: ${{ steps.generate_apk_from_aab.outputs.APK_GENERATED_PATH }} # This path now points to the signed APK
           retention-days: 7
 
   create-release:
@@ -136,12 +162,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js for release job # <--- This ensures 'node' command is available
+      - name: Set up Node.js for release job
         uses: actions/setup-node@v4
         with:
-          node-version: '18' # Ensure this matches your build job's Node.js version
+          node-version: '18'
 
-      - name: Get project name and version # <--- This step relies on Node.js to read package.json
+      - name: Get project name and version
         id: project_info
         run: |
           PROJECT_NAME=$(basename "${{ github.repository }}")
@@ -156,7 +182,7 @@ jobs:
           name: android-release-apk
           path: ./release_artifacts
 
-      - name: Rename APK and prepare for upload # <--- This step renames the APK with project name and version
+      - name: Rename APK and prepare for upload
         id: prepare_apk
         run: |
           PROJECT_NAME="${{ steps.project_info.outputs.PROJECT_NAME }}"

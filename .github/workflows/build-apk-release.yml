@@ -9,6 +9,9 @@ on:
       - main
   workflow_dispatch:
 
+permissions: # <--- ADDED THIS GLOBAL PERMISSIONS BLOCK
+  contents: write # Grants permission to create and edit repository content (needed for releases)
+
 jobs:
   spell-check:
     timeout-minutes: 5
@@ -89,11 +92,12 @@ jobs:
 
       - name: Install Bundletool
         run: |
-          # Use a specific version for reliability. Check https://github.com/google/bundletool/releases/download/1.16.0/bundletool-all-1.16.0.jar -O bundletool.jar
+          # Use a specific version for reliability. Check https://github.com/google/bundletool/releases for the latest stable.
           wget https://github.com/google/bundletool/releases/download/1.16.0/bundletool-all-1.16.0.jar -O bundletool.jar
-          echo "BUNDLETOOL_JAR=$GITHUB_WORKSPACE/bundletool.jar" >> $GITHUB_ENV
+          echo "BUNDLETOOL_JAR=$GITHUB_WORKSPACE/bundletool.jar" >> "$GITHUB_ENV"
 
       - name: Generate APK from AAB
+        id: generate_apk_from_aab # This ID is necessary for outputting the path
         run: |
           AAB_PATH="${{ steps.locate_aab.outputs.AAB_PATH }}"
           OUTPUT_APKS_PATH="app-release.apks"
@@ -113,15 +117,13 @@ jobs:
             exit 1
           fi
           echo "Found universal APK at: $UNIVERSAL_APK_PATH"
-          # We'll use GITHUB_OUTPUT for this, as env vars are not persisted across jobs easily for direct path access.
-          # The download-artifact step will handle putting it in the right place.
           echo "APK_GENERATED_PATH=$UNIVERSAL_APK_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-release-apk # This name will remain the same for the artifact transfer
-          path: ${{ steps.generate_apk_from_aab.outputs.APK_GENERATED_PATH }} # Use the output from the previous step
+          name: android-release-apk
+          path: ${{ steps.generate_apk_from_aab.outputs.APK_GENERATED_PATH }}
           retention-days: 7
 
   create-release:
@@ -134,23 +136,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # *** ADDED THIS STEP ***
-      - name: Set up Node.js for release job
+      - name: Set up Node.js for release job # <--- This ensures 'node' command is available
         uses: actions/setup-node@v4
         with:
           node-version: '18' # Ensure this matches your build job's Node.js version
 
-      - name: Get project name and version
+      - name: Get project name and version # <--- This step relies on Node.js to read package.json
         id: project_info
         run: |
-          PROJECT_NAME=$(basename "${{ github.repository }}") # Gets the repo name
-          VERSION=$(node -p "require('./package.json').version") # Reads version from package.json
+          PROJECT_NAME=$(basename "${{ github.repository }}")
+          VERSION=$(node -p "require('./package.json').version")
 
           echo "PROJECT_NAME=$PROJECT_NAME" >> "$GITHUB_OUTPUT"
           echo "APP_VERSION=$VERSION" >> "$GITHUB_OUTPUT"
-        # Ensure package.json is at the root of your repo
-        # If your package.json is in a subdirectory (e.g., 'client/package.json'),
-        # change the path to: VERSION=$(node -p "require('./client/package.json').version")
 
       - name: Download APK artifact
         uses: actions/download-artifact@v4
@@ -158,7 +156,7 @@ jobs:
           name: android-release-apk
           path: ./release_artifacts
 
-      - name: Rename APK and prepare for upload
+      - name: Rename APK and prepare for upload # <--- This step renames the APK with project name and version
         id: prepare_apk
         run: |
           PROJECT_NAME="${{ steps.project_info.outputs.PROJECT_NAME }}"
@@ -175,13 +173,13 @@ jobs:
       - name: Create Release and Upload APK
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: "v${{ steps.project_info.outputs.APP_VERSION }}" # e.g., v1.0.0
-          name: "${{ steps.project_info.outputs.PROJECT_NAME }} Release v${{ steps.project_info.outputs.APP_VERSION }}" # e.g., MyProject Release v1.0.0
+          tag_name: "v${{ steps.project_info.outputs.APP_VERSION }}"
+          name: "${{ steps.project_info.outputs.PROJECT_NAME }} Release v${{ steps.project_info.outputs.APP_VERSION }}"
           body: |
             New Android APK for version ${{ steps.project_info.outputs.APP_VERSION }}.
             Automatic release from GitHub Actions.
           draft: false
           prerelease: false
-          files: ${{ steps.prepare_apk.outputs.RELEASE_APK_PATH }} # Use the new path of the renamed APK
+          files: ${{ steps.prepare_apk.outputs.RELEASE_APK_PATH }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

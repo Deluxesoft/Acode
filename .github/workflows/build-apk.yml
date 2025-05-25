@@ -1,3 +1,44 @@
+name: Build Android Apk
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  spell-check:
+    timeout-minutes: 5
+    name: Check spelling
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Actions Repository
+        uses: actions/checkout@v4
+
+      - name: Check spelling
+        uses: crate-ci/typos@master
+        with:
+          config: ./_typos.toml
+
+  quality:
+    timeout-minutes: 5
+    name: Linting and formatting
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Biome
+        uses: biomejs/setup-biome@v2
+
+      - name: Run Biome
+        run: biome ci .
+
   build-android-apk:
     name: Build Android APK
     runs-on: ubuntu-latest
@@ -53,7 +94,7 @@
           echo "BUNDLETOOL_JAR=$GITHUB_WORKSPACE/bundletool.jar" >> $GITHUB_ENV
 
       - name: Generate APK from AAB
-        id: generate_apk_from_aab # <-- THIS ID WAS MISSING AND IS REQUIRED!
+        id: generate_apk_from_aab # Added this ID to output the APK path
         run: |
           AAB_PATH="${{ steps.locate_aab.outputs.AAB_PATH }}"
           OUTPUT_APKS_PATH="app-release.apks"
@@ -73,11 +114,11 @@
             exit 1
           fi
           echo "Found universal APK at: $UNIVERSAL_APK_PATH"
-          echo "APK_GENERATED_PATH=$UNIVERSAL_APK_PATH" >> "$GITHUB_OUTPUT" # Outputting the path
+          echo "APK_GENERATED_PATH=$UNIVERSAL_APK_PATH" >> "$GITHUB_OUTPUT" # Outputting the path to be used by subsequent steps
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: android-release-apk
-          path: ${{ steps.generate_apk_from_aab.outputs.APK_GENERATED_PATH }} # Referencing the output from the step with the 'id'
+          path: ${{ steps.generate_apk_from_aab.outputs.APK_GENERATED_PATH }} # Correctly referencing the output
           retention-days: 7

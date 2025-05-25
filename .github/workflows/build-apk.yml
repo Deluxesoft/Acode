@@ -55,23 +55,73 @@ jobs:
       - name: Install Apache Cordova CLI
         run: npm install -g cordova
 
+      - name: Set up Java Development Kit (JDK)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v2
+        with:
+          api-level: '33' # Adjust if needed
+          build-tools: '33.0.0' # Adjust if needed
+
       - name: Initial setup (yarn setup)
         run: yarn setup
 
-      # --- REMOVED THE "Add Android platform" STEP HERE ---
+      - name: Build Android Release AAB
+        run: yarn build android free prod # This now correctly states it builds an AAB
 
-      - name: Build Android Release APK
-        run: yarn build android free prod # Double-check these arguments are correct for your project
-
-      - name: Locate and upload APK artifact
+      - name: Locate AAB artifact
+        id: locate_aab # Added an ID for easy access to outputs
         run: |
-          APK_PATH=$(find . -name "*.apk" | grep "release" | head -n 1)
-          if [ -z "$APK_PATH" ]; then
-            echo "Error: No release APK found after build! Check previous steps' logs for build failures."
+          AAB_PATH=$(find . -name "app-release.aab" | head -n 1)
+          if [ -z "$AAB_PATH" ]; then
+            echo "Error: No release AAB found after build! Check previous steps' logs for build failures."
+            ls -R . # Debugging output
             exit 1
           fi
-          echo "Found APK at: $APK_PATH"
-          echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
+          echo "Found AAB at: $AAB_PATH"
+          echo "AAB_PATH=$AAB_PATH" >> "$GITHUB_OUTPUT" # Use GITHUB_OUTPUT for step outputs
+
+      - name: Download Bundletool
+        # This action simplifies downloading and setting up bundletool
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '11' # Needs Java to run
+          # This action sets up the JDK, but we also need bundletool itself.
+          # We'll manually download it.
+      - name: Install Bundletool
+        run: |
+          wget https://github.com/google/bundletool/releases/download/1.16.0/bundletool-all-1.16.0.jar -O bundletool.jar
+          echo "BUNDLETOOL_JAR=$GITHUB_WORKSPACE/bundletool.jar" >> $GITHUB_ENV # Store path for later use
+
+      - name: Generate APK from AAB
+        run: |
+          # Use the AAB_PATH from the previous step's output
+          AAB_PATH="${{ steps.locate_aab.outputs.AAB_PATH }}"
+          OUTPUT_APKS_PATH="app-release.apks" # bundletool creates a .apks zip file
+          
+          java -jar "${{ env.BUNDLETOOL_JAR }}" build-apks \
+            --bundle="$AAB_PATH" \
+            --output="$OUTPUT_APKS_PATH" \
+            --mode=universal # This generates a single universal APK within the .apks file
+
+          # Unzip the .apks file to get the universal.apk
+          unzip "$OUTPUT_APKS_PATH" -d apks_output
+
+          # Locate the universal APK
+          UNIVERSAL_APK_PATH=$(find apks_output -name "universal.apk" | head -n 1)
+
+          if [ -z "$UNIVERSAL_APK_PATH" ]; then
+            echo "Error: Universal APK not found after bundletool conversion!"
+            ls -R apks_output # Debugging output
+            exit 1
+          fi
+          echo "Found universal APK at: $UNIVERSAL_APK_PATH"
+          echo "APK_PATH=$UNIVERSAL_APK_PATH" >> $GITHUB_ENV # Set this for the upload step
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

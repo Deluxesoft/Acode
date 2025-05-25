@@ -1,0 +1,123 @@
+name: Build Android Apk
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  spell-check:
+    timeout-minutes: 5
+    name: Check spelling
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Actions Repository
+        uses: actions/checkout@v4
+
+      - name: Check spelling
+        uses: crate-ci/typos@master
+        with:
+          config: ./_typos.toml
+
+  quality:
+    timeout-minutes: 5
+    name: Linting and formatting
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Biome
+        uses: biomejs/setup-biome@v2
+
+      - name: Run Biome
+        run: biome ci .
+
+  build-android-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Apache Cordova CLI
+        run: npm install -g cordova
+
+      - name: Set up Java Development Kit (JDK)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17' # CHANGE THIS FROM '11' TO '17'
+          # This is required because the Android SDK's sdkmanager tool
+          # is compiled with Java 17 (class file version 61.0).
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v2
+        with:
+          api-level: '33' # Adjust if needed
+          build-tools: '33.0.0' # Adjust if needed
+
+      - name: Initial setup (yarn setup)
+        run: yarn setup
+
+      - name: Build Android Release AAB
+        run: yarn build android free prod
+
+      - name: Locate AAB artifact
+        id: locate_aab
+        run: |
+          AAB_PATH=$(find . -name "app-release.aab" | head -n 1)
+          if [ -z "$AAB_PATH" ]; then
+            echo "Error: No release AAB found after build! Check previous steps' logs for build failures."
+            ls -R .
+            exit 1
+          fi
+          echo "Found AAB at: $AAB_PATH"
+          echo "AAB_PATH=$AAB_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Install Bundletool
+        run: |
+          # Use a specific version for reliability. Check https://github.com/google/bundletool/releases for the latest stable.
+          wget https://github.com/google/bundletool/releases/download/1.16.0/bundletool-all-1.16.0.jar -O bundletool.jar
+          echo "BUNDLETOOL_JAR=$GITHUB_WORKSPACE/bundletool.jar" >> $GITHUB_ENV
+
+      - name: Generate APK from AAB
+        run: |
+          AAB_PATH="${{ steps.locate_aab.outputs.AAB_PATH }}"
+          OUTPUT_APKS_PATH="app-release.apks"
+
+          java -jar "${{ env.BUNDLETOOL_JAR }}" build-apks \
+            --bundle="$AAB_PATH" \
+            --output="$OUTPUT_APKS_PATH" \
+            --mode=universal
+
+          unzip "$OUTPUT_APKS_PATH" -d apks_output
+
+          UNIVERSAL_APK_PATH=$(find apks_output -name "universal.apk" | head -n 1)
+
+          if [ -z "$UNIVERSAL_APK_PATH" ]; then
+            echo "Error: Universal APK not found after bundletool conversion!"
+            ls -R apks_output
+            exit 1
+          fi
+          echo "Found universal APK at: $UNIVERSAL_APK_PATH"
+          echo "APK_PATH=$UNIVERSAL_APK_PATH" >> $GITHUB_ENV
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-apk
+          path: ${{ env.APK_PATH }}
+          retention-days: 7

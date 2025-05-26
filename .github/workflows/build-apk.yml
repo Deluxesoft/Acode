@@ -102,6 +102,8 @@ jobs:
         run: yarn setup
 
       - name: Build Android Release AAB
+        # This command produces the Android App Bundle.
+        # It should automatically set debuggable=false for 'prod' builds.
         run: yarn build android free prod
 
       - name: Locate AAB artifact
@@ -169,18 +171,19 @@ jobs:
           APK_PATH="${{ steps.generate_apk_from_aab.outputs.APK_GENERATED_PATH }}"
           echo "Inspecting APK: $APK_PATH for debuggable flag..."
 
-          # Find the aapt2 executable dynamically based on build tools version
-          BUILD_TOOLS_DIR=$(find "${{ env.ANDROID_SDK_ROOT }}/build-tools/" -maxdepth 1 -name "${{ env.ANDROID_BUILD_TOOLS }}" | head -n 1)
-          if [ -z "$BUILD_TOOLS_DIR" ]; then
-              echo "Error: Android build-tools directory not found for version ${{ env.ANDROID_BUILD_TOOLS }}"
-              exit 1
-          fi
-          AAPT2_PATH="$BUILD_TOOLS_DIR/aapt2"
+          # Use ANDROID_HOME which is reliably set by setup-android action
+          # Use a more flexible find to locate aapt2 within any build-tools subdirectory
+          AAPT2_PATH=$(find "${ANDROID_HOME}/build-tools/" -name "aapt2" -type f | head -n 1)
 
-          if [ ! -f "$AAPT2_PATH" ]; then
-              echo "Error: aapt2 executable not found at $AAPT2_PATH. Check Android SDK setup."
+          if [ -z "$AAPT2_PATH" ]; then
+              echo "Error: aapt2 executable not found. Please ensure Android SDK build-tools are correctly installed."
+              echo "Looked for aapt2 in: ${ANDROID_HOME}/build-tools/"
+              echo "Contents of build-tools directory:"
+              ls -l "${ANDROID_HOME}/build-tools/" || echo "Could not list build-tools directory."
               exit 1
           fi
+
+          echo "Found aapt2 at: $AAPT2_PATH"
 
           MANIFEST_DUMP=$("$AAPT2_PATH" dump xmltree "$APK_PATH" AndroidManifest.xml)
 
@@ -198,6 +201,11 @@ jobs:
               echo "✅ SUCCESS: The android:debuggable flag is NOT explicitly set to true."
               echo "(For 'release' builds, the default is false if not explicitly true.)"
           fi
+        env:
+          # Ensure ANDROID_HOME is available in this step's shell context
+          # It's usually set by setup-android, but explicitly providing it for clarity
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

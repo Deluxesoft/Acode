@@ -185,7 +185,8 @@ jobs:
 
           echo "Found aapt2 at: $AAPT2_PATH"
 
-          MANIFEST_DUMP=$("$AAPT2_PATH" dump xmltree "$APK_PATH" AndroidManifest.xml)
+          # CORRECTED LINE: Use --file flag for AndroidManifest.xml and place APK_PATH first as target.
+          MANIFEST_DUMP=$("$AAPT2_PATH" dump xmltree "$APK_PATH" --file AndroidManifest.xml)
 
           # Output the relevant section for debugging
           echo "--- AndroidManifest.xml relevant section ---"

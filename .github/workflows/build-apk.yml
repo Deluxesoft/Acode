@@ -1,6 +1,6 @@
 # Generate signed apk renaming it to the App name and version based on git tags. also there is a step to check if the generated apk has the debuggable flag on or off
 
-name: Build Android Debug APK for Direct Install
+name: Build Android Unsigned APK for Inspection/Specific Use
 
 on:
   push:
@@ -51,16 +51,15 @@ jobs:
       - name: Run Biome Checks
         run: biome ci .
 
-  # Job 3: Build Android APK - Optimized with caching and uses debug signing
+  # Job 3: Build Android APK - Optimized with caching and remains unsigned
   build-android-apk:
-    name: Build Android APK
+    name: Build Android APK (Unsigned)
     runs-on: ubuntu-latest
     env: # Define common environment variables for this job
       NODE_VERSION: '18'
       JAVA_VERSION: '17'
       ANDROID_API_LEVEL: '33'
       ANDROID_BUILD_TOOLS: '33.0.0'
-      # ANDROID_SDK_ROOT is usually set by setup-android action, but can be explicit for clarity
       ANDROID_SDK_ROOT: '/usr/local/lib/android/sdk' # Standard path on ubuntu-latest runners
 
     steps:
@@ -70,7 +69,6 @@ jobs:
       - name: Cache Node.js modules
         uses: actions/cache@v4
         with:
-          # Caches both npm global cache and project's node_modules
           path: |
             ~/.npm
             node_modules
@@ -123,43 +121,25 @@ jobs:
           wget https://github.com/google/bundletool/releases/download/1.16.0/bundletool-all-1.16.0.jar -O bundletool.jar
           echo "BUNDLETOOL_JAR=$GITHUB_WORKSPACE/bundletool.jar" >> "$GITHUB_ENV"
 
-      - name: Generate APK from AAB (Signed with Debug Keystore)
+      - name: Generate APK from AAB (Unsigned)
         id: generate_apk_from_aab
+        # IMPORTANT: Removed signing parameters from bundletool
         run: |
           AAB_PATH="${{ steps.locate_aab.outputs.AAB_PATH }}"
-          OUTPUT_APKS_PATH="app-debug.apks"
-
-          DEBUG_KEYSTORE_PATH="$HOME/.android/debug.keystore"
-          DEBUG_KEYSTORE_PASSWORD="android"
-          DEBUG_KEY_ALIAS="androiddebugkey"
-          DEBUG_KEY_PASSWORD="android"
-
-          if [ ! -f "$DEBUG_KEYSTORE_PATH" ]; then
-            echo "Warning: Debug keystore not found. Attempting to generate it."
-            keytool -genkeypair -v -keystore "$DEBUG_KEYSTORE_PATH" \
-              -alias "$DEBUG_KEY_ALIAS" -keyalg RSA -keysize 2048 -validity 10000 \
-              -storepass "$DEBUG_KEYSTORE_PASSWORD" -keypass "$DEBUG_KEY_PASSWORD" \
-              -dname "CN=Android Debug,O=Android,C=US"
-            echo "Debug keystore created."
-          fi
-
-          echo "Signing APK with Android debug keystore: $DEBUG_KEYSTORE_PATH"
+          OUTPUT_APKS_PATH="app-unsigned.apks" # Changed output filename
 
           java -jar "${{ env.BUNDLETOOL_JAR }}" build-apks \
             --bundle="$AAB_PATH" \
             --output="$OUTPUT_APKS_PATH" \
             --mode=universal \
-            --ks="$DEBUG_KEYSTORE_PATH" \
-            --ks-pass="pass:$DEBUG_KEYSTORE_PASSWORD" \
-            --ks-key-alias="$DEBUG_KEY_ALIAS" \
-            --key-pass="pass:$DEBUG_KEY_PASSWORD"
+            # Removed --ks, --ks-pass, --ks-key-alias, --key-pass
+          
+          unzip "$OUTPUT_APKS_PATH" -d apks_output # Unzip the .apks bundle
 
-          unzip "$OUTPUT_APKS_PATH" -d apks_output
-
-          UNIVERSAL_APK_PATH=$(find apks_output -name "universal.apk" | head -n 1)
+          UNIVERSAL_APK_PATH=$(find apks_output -name "universal.apk" | head -n 1) # Locate the universal APK
 
           if [ -z "$UNIVERSAL_APK_PATH" ]; then
-            echo "Error: Universal APK not found after bundletool conversion and signing!"
+            echo "Error: Universal APK not found after bundletool conversion!"
             ls -R apks_output
             exit 1
           fi
@@ -171,8 +151,6 @@ jobs:
           APK_PATH="${{ steps.generate_apk_from_aab.outputs.APK_GENERATED_PATH }}"
           echo "Inspecting APK: $APK_PATH for debuggable flag..."
 
-          # Use ANDROID_HOME which is reliably set by setup-android action
-          # Use a more flexible find to locate aapt2 within any build-tools subdirectory
           AAPT2_PATH=$(find "${ANDROID_HOME}/build-tools/" -name "aapt2" -type f | head -n 1)
 
           if [ -z "$AAPT2_PATH" ]; then
@@ -185,7 +163,6 @@ jobs:
 
           echo "Found aapt2 at: $AAPT2_PATH"
 
-          # CORRECTED LINE: Use --file flag for AndroidManifest.xml and place APK_PATH first as target.
           MANIFEST_DUMP=$("$AAPT2_PATH" dump xmltree "$APK_PATH" --file AndroidManifest.xml)
 
           # Output the relevant section for debugging
@@ -203,22 +180,20 @@ jobs:
               echo "(For 'release' builds, the default is false if not explicitly true.)"
           fi
         env:
-          # Ensure ANDROID_HOME is available in this step's shell context
-          # It's usually set by setup-android, but explicitly providing it for clarity
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
 
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-debug-apk
+          name: android-unsigned-apk # Naming the artifact clearly as unsigned
           path: ${{ steps.generate_apk_from_aab.outputs.APK_GENERATED_PATH }}
           retention-days: 7
 
   # Job 4: Create GitHub Release
   create-release:
     name: Create GitHub Release
-    needs: build-android-apk
+    needs: build-android-apk # This job runs only after the APK build is successful
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
 
@@ -226,12 +201,13 @@ jobs:
       - name: Checkout Repository Code (Full History for Tags)
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0 # Essential to get all Git tags for versioning
 
       - name: Get Project Name and Version from Git Tag
         id: project_info
         run: |
           PROJECT_NAME=$(basename "${{ github.repository }}")
+          # Uses version from workflow_dispatch input or the latest Git tag
           VERSION="${{ github.event.inputs.tag }}"
 
           if [ -z "$VERSION" ]; then
@@ -252,7 +228,7 @@ jobs:
       - name: Download APK Artifact
         uses: actions/download-artifact@v4
         with:
-          name: android-debug-apk
+          name: android-unsigned-apk # Download the unsigned APK artifact
           path: ./release_artifacts
 
       - name: Rename APK and Prepare for Upload
@@ -261,7 +237,8 @@ jobs:
           PROJECT_NAME="${{ steps.project_info.outputs.PROJECT_NAME }}"
           APP_VERSION="${{ steps.project_info.outputs.APP_VERSION }}"
           OLD_APK_PATH="./release_artifacts/universal.apk"
-          NEW_APK_NAME="${PROJECT_NAME}-v${APP_VERSION}-debug.apk"
+          # Appends '-unsigned.apk' to the filename for clarity
+          NEW_APK_NAME="${PROJECT_NAME}-v${APP_VERSION}-unsigned.apk" # <-- MODIFIED HERE
           NEW_APK_PATH="./release_artifacts/${NEW_APK_NAME}"
 
           mv "$OLD_APK_PATH" "$NEW_APK_PATH"
@@ -272,15 +249,16 @@ jobs:
       - name: Create GitHub Release and Upload APK
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: "v${{ steps.project_info.outputs.APP_VERSION }}-debug"
-          name: "${{ steps.project_info.outputs.PROJECT_NAME }} Release v${{ steps.project_info.outputs.APP_VERSION }} (Debug)"
+          # Adds '-unsigned' to the GitHub release tag and name
+          tag_name: "v${{ steps.project_info.outputs.APP_VERSION }}-unsigned"
+          name: "${{ steps.project_info.outputs.PROJECT_NAME }} Release v${{ steps.project_info.outputs.APP_VERSION }} (Unsigned)"
           body: |
             New Android APK for version ${{ steps.project_info.outputs.APP_VERSION }}.
-            **This is a DEBUG-SIGNED BUILD, intended for personal use or direct installation.**
-            **It is NOT for release on app stores.**
+            **This is an UNSIGNED BUILD.**
+            **It cannot be installed on a device without being signed first.**
             Automatic release from GitHub Actions.
           draft: false
           prerelease: false
           files: ${{ steps.prepare_apk.outputs.RELEASE_APK_PATH }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Default token for GitHub API interactions

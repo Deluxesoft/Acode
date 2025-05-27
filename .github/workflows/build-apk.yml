@@ -56,12 +56,16 @@ jobs:
     steps:
       - name: Checkout Repository Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Set version in config.xml, package.json, and Gradle from tag or input
         run: |
+          set -e
           VERSION="${{ github.event.inputs.tag }}"
           if [ -z "$VERSION" ]; then
             VERSION=$(git describe --tags --abbrev=0 --match "v[0-9]*" 2>/dev/null | sed 's/^v//' || \
@@ -87,7 +91,6 @@ jobs:
           # Set Gradle versionName and increment versionCode (if present)
           if [ -f android/app/build.gradle ]; then
             sed -i "s/versionName \".*\"/versionName \"$VERSION\"/" android/app/build.gradle
-            # Auto-increment versionCode (optional, safe for simple projects)
             CUR_CODE=$(grep versionCode android/app/build.gradle | head -n1 | awk '{print $2}')
             if [[ "$CUR_CODE" =~ ^[0-9]+$ ]]; then
               NEW_CODE=$((CUR_CODE + 1))
@@ -210,6 +213,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Get Project Name and Version from Git Tag
         id: project_info
@@ -240,4 +244,27 @@ jobs:
         id: prepare_apk
         run: |
           PROJECT_NAME="${{ steps.project_info.outputs.PROJECT_NAME }}"
-          APP_VERSION
+          APP_VERSION="${{ steps.project_info.outputs.APP_VERSION }}"
+          OLD_APK_PATH="./release_artifacts/universal.apk"
+          NEW_APK_NAME="${PROJECT_NAME}-v${APP_VERSION}-unsigned.apk"
+          NEW_APK_PATH="./release_artifacts/${NEW_APK_NAME}"
+          mv "$OLD_APK_PATH" "$NEW_APK_PATH"
+          echo "Renamed APK to: $NEW_APK_PATH"
+          echo "RELEASE_APK_PATH=$NEW_APK_PATH" >> "$GITHUB_OUTPUT"
+          echo "RELEASE_APK_NAME=$NEW_APK_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release and Upload APK
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: "v${{ steps.project_info.outputs.APP_VERSION }}-unsigned"
+          name: "${{ steps.project_info.outputs.PROJECT_NAME }} Release v${{ steps.project_info.outputs.APP_VERSION }} (Unsigned)"
+          body: |
+            New Android APK for version ${{ steps.project_info.outputs.APP_VERSION }}.
+            **This is an UNSIGNED BUILD.**
+            **It cannot be installed on a device without being signed first.**
+            Automatic release from GitHub Actions.
+          draft: false
+          prerelease: false
+          files: ${{ steps.prepare_apk.outputs.RELEASE_APK_PATH }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

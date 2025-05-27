@@ -1,0 +1,242 @@
+# Generate unsigned apk renaming it to the App name and version correct version (based on config.xml instead of git tags) also there is a step to check if the generated apk has the debuggable flag on or off
+
+name: Build Android Unsigned APK for Inspection/Specific Use
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Specify a Git tag for the APK version (e.g., v1.0.0, 1.2.3). If empty, uses the latest tag.'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  spell-check:
+    timeout-minutes: 5
+    name: Check spelling
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository Code
+        uses: actions/checkout@v4
+
+      - name: Run Typos Spell Checker
+        uses: crate-ci/typos@master
+        with:
+          config: ./_typos.toml
+
+  quality:
+    timeout-minutes: 5
+    name: Linting and formatting
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository Code
+        uses: actions/checkout@v4
+
+      - name: Setup Biome Linter
+        uses: biomejs/setup-biome@v2
+
+      - name: Run Biome Checks
+        run: biome ci .
+
+  build-android-apk:
+    name: Build Android APK (Unsigned)
+    runs-on: ubuntu-latest
+    env:
+      NODE_VERSION: '18'
+      JAVA_VERSION: '17'
+      ANDROID_API_LEVEL: '33'
+      ANDROID_BUILD_TOOLS: '33.0.0'
+      ANDROID_SDK_ROOT: '/usr/local/lib/android/sdk'
+
+    steps:
+      - name: Checkout Repository Code
+        uses: actions/checkout@v4
+
+      - name: Cache Node.js modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json', '**/yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Apache Cordova CLI
+        run: npm install -g cordova
+
+      - name: Set up Java Development Kit (JDK) ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Android SDK (API Level ${{ env.ANDROID_API_LEVEL }}, Build Tools ${{ env.ANDROID_BUILD_TOOLS }})
+        uses: android-actions/setup-android@v2
+        with:
+          api-level: ${{ env.ANDROID_API_LEVEL }}
+          build-tools: ${{ env.ANDROID_BUILD_TOOLS }}
+
+      - name: Initial project setup (yarn setup)
+        run: yarn setup
+
+      - name: Build Android Release AAB
+        run: yarn build android free prod
+
+      - name: Locate AAB artifact
+        id: locate_aab
+        run: |
+          AAB_PATH=$(find . -name "app-release.aab" | head -n 1)
+          if [ -z "$AAB_PATH" ]; then
+            echo "Error: No release AAB found after build! Check previous steps' logs for build failures."
+            ls -R .
+            exit 1
+          fi
+          echo "Found AAB at: $AAB_PATH"
+          echo "AAB_PATH=$AAB_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Install Google Bundletool
+        run: |
+          wget https://github.com/google/bundletool/releases/download/1.16.0/bundletool-all-1.16.0.jar -O bundletool.jar
+          echo "BUNDLETOOL_JAR=$GITHUB_WORKSPACE/bundletool.jar" >> "$GITHUB_ENV"
+
+      - name: Generate APK from AAB (Unsigned)
+        id: generate_apk_from_aab
+        run: |
+          AAB_PATH="${{ steps.locate_aab.outputs.AAB_PATH }}"
+          OUTPUT_APKS_PATH="app-unsigned.apks"
+          java -jar "${{ env.BUNDLETOOL_JAR }}" build-apks \
+            --bundle="$AAB_PATH" \
+            --output="$OUTPUT_APKS_PATH" \
+            --mode=universal
+          unzip "$OUTPUT_APKS_PATH" -d apks_output
+          UNIVERSAL_APK_PATH=$(find apks_output -name "universal.apk" | head -n 1)
+          if [ -z "$UNIVERSAL_APK_PATH" ]; then
+            echo "Error: Universal APK not found after bundletool conversion!"
+            ls -R apks_output
+            exit 1
+          fi
+          echo "Found universal APK at: $UNIVERSAL_APK_PATH"
+          echo "APK_GENERATED_PATH=$UNIVERSAL_APK_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Verify android:debuggable flag is FALSE
+        run: |
+          APK_PATH="${{ steps.generate_apk_from_aab.outputs.APK_GENERATED_PATH }}"
+          echo "Inspecting APK: $APK_PATH for debuggable flag..."
+          AAPT2_PATH=$(find "${ANDROID_HOME}/build-tools/" -name "aapt2" -type f | head -n 1)
+          if [ -z "$AAPT2_PATH" ]; then
+              echo "Error: aapt2 executable not found. Please ensure Android SDK build-tools are correctly installed."
+              echo "Looked for aapt2 in: ${ANDROID_HOME}/build-tools/"
+              echo "Contents of build-tools directory:"
+              ls -l "${ANDROID_HOME}/build-tools/" || echo "Could not list build-tools directory."
+              exit 1
+          fi
+          echo "Found aapt2 at: $AAPT2_PATH"
+          MANIFEST_DUMP=$("$AAPT2_PATH" dump xmltree "$APK_PATH" --file AndroidManifest.xml)
+          echo "--- AndroidManifest.xml relevant section ---"
+          echo "$MANIFEST_DUMP" | grep 'android:debuggable' || echo "android:debuggable flag not found in manifest."
+          echo "------------------------------------------"
+          if echo "$MANIFEST_DUMP" | grep -q 'A: android:debuggable(0x0101000f)=(type 0x12)0xffffffff'; then
+              echo "🔴 ERROR: The APK is debuggable! The android:debuggable flag is explicitly set to TRUE."
+              exit 1
+          else
+              echo "✅ SUCCESS: The android:debuggable flag is NOT explicitly set to true."
+          fi
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+
+      - name: Parse version from config.xml
+        id: parse_version
+        run: |
+          VERSION=$(grep -oP 'version="\K[^"]+' config.xml | head -n1)
+          PROJECT_NAME=$(basename "${{ github.repository }}")
+          echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_OUTPUT
+          echo "APP_VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Rename APK and Prepare for Upload
+        id: prepare_apk
+        run: |
+          PROJECT_NAME="${{ steps.parse_version.outputs.PROJECT_NAME }}"
+          APP_VERSION="${{ steps.parse_version.outputs.APP_VERSION }}"
+          OLD_APK_PATH="./apks_output/universal.apk"
+          NEW_APK_NAME="${PROJECT_NAME}-v${APP_VERSION}-unsigned.apk"
+          NEW_APK_PATH="./release_artifacts/${NEW_APK_NAME}"
+          mkdir -p ./release_artifacts
+          mv "$OLD_APK_PATH" "$NEW_APK_PATH"
+          echo "Renamed APK to: $NEW_APK_PATH"
+          echo "RELEASE_APK_PATH=$NEW_APK_PATH" >> "$GITHUB_OUTPUT"
+          echo "RELEASE_APK_NAME=$NEW_APK_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-unsigned-apk
+          path: ${{ steps.prepare_apk.outputs.RELEASE_APK_PATH }}
+          retention-days: 7
+
+  create-release:
+    name: Create GitHub Release
+    needs: build-android-apk
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout Repository Code (Full History for Tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download APK Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: android-unsigned-apk
+          path: ./release_artifacts
+
+      - name: Parse version from config.xml
+        id: parse_version_release
+        run: |
+          VERSION=$(grep -oP 'version="\K[^"]+' config.xml | head -n1)
+          PROJECT_NAME=$(basename "${{ github.repository }}")
+          echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_OUTPUT
+          echo "APP_VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Prepare APK for Upload
+        id: release_apk
+        run: |
+          PROJECT_NAME="${{ steps.parse_version_release.outputs.PROJECT_NAME }}"
+          APP_VERSION="${{ steps.parse_version_release.outputs.APP_VERSION }}"
+          APK_PATH="./release_artifacts/${PROJECT_NAME}-v${APP_VERSION}-unsigned.apk"
+          echo "RELEASE_APK_PATH=$APK_PATH" >> "$GITHUB_OUTPUT"
+          echo "RELEASE_APK_NAME=$(basename "$APK_PATH")" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release and Upload APK
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: "v${{ steps.parse_version_release.outputs.APP_VERSION }}"
+          name: "${{ steps.parse_version_release.outputs.PROJECT_NAME }} Release v${{ steps.parse_version_release.outputs.APP_VERSION }}"
+          body: |
+            New Android APK for version ${{ steps.parse_version_release.outputs.APP_VERSION }}.
+            **This is an UNSIGNED BUILD.**
+            **It cannot be installed on a device without being signed first.**
+            Automatic release from GitHub Actions.
+          draft: false
+          prerelease: false
+          files: ${{ steps.release_apk.outputs.RELEASE_APK_PATH }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

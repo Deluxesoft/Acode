@@ -17,54 +17,86 @@ on:
         type: string
 
 permissions:
-  contents: write # Grants permission to create and edit repository content (needed for releases)
+  contents: write
 
 jobs:
-  # Job 1: Check spelling - Good practice for any project
   spell-check:
     timeout-minutes: 5
     name: Check spelling
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Repository Code
         uses: actions/checkout@v4
-
       - name: Run Typos Spell Checker
         uses: crate-ci/typos@master
         with:
           config: ./_typos.toml
 
-  # Job 2: Linting and formatting - Good practice for any project
   quality:
     timeout-minutes: 5
     name: Linting and formatting
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Repository Code
         uses: actions/checkout@v4
-
       - name: Setup Biome Linter
         uses: biomejs/setup-biome@v2
-
       - name: Run Biome Checks
         run: biome ci .
 
-  # Job 3: Build Android APK - Optimized with caching and remains unsigned
   build-android-apk:
     name: Build Android APK (Unsigned)
     runs-on: ubuntu-latest
-    env: # Define common environment variables for this job
+    env:
       NODE_VERSION: '18'
       JAVA_VERSION: '17'
       ANDROID_API_LEVEL: '33'
       ANDROID_BUILD_TOOLS: '33.0.0'
-      ANDROID_SDK_ROOT: '/usr/local/lib/android/sdk' # Standard path on ubuntu-latest runners
-
+      ANDROID_SDK_ROOT: '/usr/local/lib/android/sdk'
     steps:
       - name: Checkout Repository Code
         uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Set version in config.xml, package.json, and Gradle from tag or input
+        run: |
+          VERSION="${{ github.event.inputs.tag }}"
+          if [ -z "$VERSION" ]; then
+            VERSION=$(git describe --tags --abbrev=0 --match "v[0-9]*" 2>/dev/null | sed 's/^v//' || \
+                      git describe --tags --abbrev=0 --match "[0-9]*" 2>/dev/null | sed 's/^v//')
+            [ -z "$VERSION" ] && VERSION="0.0.1"
+          else
+            VERSION=$(echo "$VERSION" | sed 's/^v//')
+          fi
+          echo "Determined version: $VERSION"
+
+          # Set config.xml version (Cordova main source of truth)
+          if [ -f config.xml ]; then
+            sed -i "s/version=\"[^\"]*\"/version=\"$VERSION\"/" config.xml
+            echo "Set config.xml version to $VERSION"
+          fi
+
+          # Set package.json version (if present)
+          if [ -f package.json ]; then
+            jq ".version = \"$VERSION\"" package.json > package.tmp.json && mv package.tmp.json package.json
+            echo "Set package.json version to $VERSION"
+          fi
+
+          # Set Gradle versionName and increment versionCode (if present)
+          if [ -f android/app/build.gradle ]; then
+            sed -i "s/versionName \".*\"/versionName \"$VERSION\"/" android/app/build.gradle
+            # Auto-increment versionCode (optional, safe for simple projects)
+            CUR_CODE=$(grep versionCode android/app/build.gradle | head -n1 | awk '{print $2}')
+            if [[ "$CUR_CODE" =~ ^[0-9]+$ ]]; then
+              NEW_CODE=$((CUR_CODE + 1))
+              sed -i "s/versionCode [0-9]\+/versionCode $NEW_CODE/" android/app/build.gradle
+              echo "Set Gradle versionCode to $NEW_CODE"
+            fi
+            echo "Set versionName in Gradle to $VERSION"
+          fi
+        shell: bash
 
       - name: Cache Node.js modules
         uses: actions/cache@v4
@@ -100,8 +132,6 @@ jobs:
         run: yarn setup
 
       - name: Build Android Release AAB
-        # This command produces the Android App Bundle.
-        # It should automatically set debuggable=false for 'prod' builds.
         run: yarn build android free prod
 
       - name: Locate AAB artifact
@@ -123,21 +153,15 @@ jobs:
 
       - name: Generate APK from AAB (Unsigned)
         id: generate_apk_from_aab
-        # IMPORTANT: Removed signing parameters from bundletool
         run: |
           AAB_PATH="${{ steps.locate_aab.outputs.AAB_PATH }}"
-          OUTPUT_APKS_PATH="app-unsigned.apks" # Changed output filename
-
+          OUTPUT_APKS_PATH="app-unsigned.apks"
           java -jar "${{ env.BUNDLETOOL_JAR }}" build-apks \
             --bundle="$AAB_PATH" \
             --output="$OUTPUT_APKS_PATH" \
-            --mode=universal \
-            # Removed --ks, --ks-pass, --ks-key-alias, --key-pass
-          
-          unzip "$OUTPUT_APKS_PATH" -d apks_output # Unzip the .apks bundle
-
-          UNIVERSAL_APK_PATH=$(find apks_output -name "universal.apk" | head -n 1) # Locate the universal APK
-
+            --mode=universal
+          unzip "$OUTPUT_APKS_PATH" -d apks_output
+          UNIVERSAL_APK_PATH=$(find apks_output -name "universal.apk" | head -n 1)
           if [ -z "$UNIVERSAL_APK_PATH" ]; then
             echo "Error: Universal APK not found after bundletool conversion!"
             ls -R apks_output
@@ -150,66 +174,48 @@ jobs:
         run: |
           APK_PATH="${{ steps.generate_apk_from_aab.outputs.APK_GENERATED_PATH }}"
           echo "Inspecting APK: $APK_PATH for debuggable flag..."
-
           AAPT2_PATH=$(find "${ANDROID_HOME}/build-tools/" -name "aapt2" -type f | head -n 1)
-
           if [ -z "$AAPT2_PATH" ]; then
               echo "Error: aapt2 executable not found. Please ensure Android SDK build-tools are correctly installed."
-              echo "Looked for aapt2 in: ${ANDROID_HOME}/build-tools/"
-              echo "Contents of build-tools directory:"
-              ls -l "${ANDROID_HOME}/build-tools/" || echo "Could not list build-tools directory."
               exit 1
           fi
-
           echo "Found aapt2 at: $AAPT2_PATH"
-
           MANIFEST_DUMP=$("$AAPT2_PATH" dump xmltree "$APK_PATH" --file AndroidManifest.xml)
-
-          # Output the relevant section for debugging
           echo "--- AndroidManifest.xml relevant section ---"
           echo "$MANIFEST_DUMP" | grep 'android:debuggable' || echo "android:debuggable flag not found in manifest."
           echo "------------------------------------------"
-
-          # Check if android:debuggable is explicitly set to true (0xffffffff)
           if echo "$MANIFEST_DUMP" | grep -q 'A: android:debuggable(0x0101000f)=(type 0x12)0xffffffff'; then
               echo "🔴 ERROR: The APK is debuggable! The android:debuggable flag is explicitly set to TRUE."
-              echo "This build will fail to ensure security for direct installs."
               exit 1
           else
               echo "✅ SUCCESS: The android:debuggable flag is NOT explicitly set to true."
-              echo "(For 'release' builds, the default is false if not explicitly true.)"
           fi
         env:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
 
-
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-unsigned-apk # Naming the artifact clearly as unsigned
+          name: android-unsigned-apk
           path: ${{ steps.generate_apk_from_aab.outputs.APK_GENERATED_PATH }}
           retention-days: 7
 
-  # Job 4: Create GitHub Release
   create-release:
     name: Create GitHub Release
-    needs: build-android-apk # This job runs only after the APK build is successful
+    needs: build-android-apk
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-
     steps:
       - name: Checkout Repository Code (Full History for Tags)
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Essential to get all Git tags for versioning
+          fetch-depth: 0
 
       - name: Get Project Name and Version from Git Tag
         id: project_info
         run: |
           PROJECT_NAME=$(basename "${{ github.repository }}")
-          # Uses version from workflow_dispatch input or the latest Git tag
           VERSION="${{ github.event.inputs.tag }}"
-
           if [ -z "$VERSION" ]; then
             VERSION=$(git describe --tags --abbrev=0 --match "v[0-9]*" 2>/dev/null | sed 's/^v//' || \
                       git describe --tags --abbrev=0 --match "[0-9]*" 2>/dev/null | sed 's/^v//')
@@ -220,7 +226,6 @@ jobs:
           else
             VERSION=$(echo "$VERSION" | sed 's/^v//')
           fi
-
           echo "PROJECT_NAME=$PROJECT_NAME" >> "$GITHUB_OUTPUT"
           echo "APP_VERSION=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Using determined version: $VERSION"
@@ -228,37 +233,11 @@ jobs:
       - name: Download APK Artifact
         uses: actions/download-artifact@v4
         with:
-          name: android-unsigned-apk # Download the unsigned APK artifact
+          name: android-unsigned-apk
           path: ./release_artifacts
 
       - name: Rename APK and Prepare for Upload
         id: prepare_apk
         run: |
           PROJECT_NAME="${{ steps.project_info.outputs.PROJECT_NAME }}"
-          APP_VERSION="${{ steps.project_info.outputs.APP_VERSION }}"
-          OLD_APK_PATH="./release_artifacts/universal.apk"
-          # Appends '-unsigned.apk' to the filename for clarity
-          NEW_APK_NAME="${PROJECT_NAME}-v${APP_VERSION}-unsigned.apk" # <-- MODIFIED HERE
-          NEW_APK_PATH="./release_artifacts/${NEW_APK_NAME}"
-
-          mv "$OLD_APK_PATH" "$NEW_APK_PATH"
-          echo "Renamed APK to: $NEW_APK_PATH"
-          echo "RELEASE_APK_PATH=$NEW_APK_PATH" >> "$GITHUB_OUTPUT"
-          echo "RELEASE_APK_NAME=$NEW_APK_NAME" >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub Release and Upload APK
-        uses: softprops/action-gh-release@v1
-        with:
-          # Adds '-unsigned' to the GitHub release tag and name
-          tag_name: "v${{ steps.project_info.outputs.APP_VERSION }}-unsigned"
-          name: "${{ steps.project_info.outputs.PROJECT_NAME }} Release v${{ steps.project_info.outputs.APP_VERSION }} (Unsigned)"
-          body: |
-            New Android APK for version ${{ steps.project_info.outputs.APP_VERSION }}.
-            **This is an UNSIGNED BUILD.**
-            **It cannot be installed on a device without being signed first.**
-            Automatic release from GitHub Actions.
-          draft: false
-          prerelease: false
-          files: ${{ steps.prepare_apk.outputs.RELEASE_APK_PATH }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Default token for GitHub API interactions
+          APP_VERSION

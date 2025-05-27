@@ -64,6 +64,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Set version in config.xml, package.json, and Gradle from tag or input
+        id: set_version
         run: |
           set -e
           VERSION="${{ github.event.inputs.tag }}"
@@ -75,6 +76,7 @@ jobs:
             VERSION=$(echo "$VERSION" | sed 's/^v//')
           fi
           echo "Determined version: $VERSION"
+          echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
 
           # Set config.xml version (Cordova main source of truth)
           if [ -f config.xml ]; then
@@ -100,6 +102,22 @@ jobs:
             echo "Set versionName in Gradle to $VERSION"
           fi
         shell: bash
+
+      - name: Remove Android platform (if exists)
+        run: cordova platform rm android || true
+
+      - name: Add Android platform
+        run: cordova platform add android
+
+      - name: Print versions for debug
+        run: |
+          echo "config.xml:"
+          grep version= config.xml || cat config.xml
+          echo "package.json:"
+          cat package.json | grep version
+          echo "Gradle:"
+          grep versionName android/app/build.gradle || echo "No gradle versionName found"
+          grep versionCode android/app/build.gradle || echo "No gradle versionCode found"
 
       - name: Cache Node.js modules
         uses: actions/cache@v4

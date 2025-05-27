@@ -170,7 +170,7 @@ jobs:
           PROJECT_NAME="${{ steps.parse_version_release.outputs.PROJECT_NAME }}"
           APP_VERSION="${{ steps.parse_version_release.outputs.APP_VERSION }}"
           OLD_APK_PATH="./release_artifacts/universal.apk"
-          NEW_APK_NAME="${PROJECT_NAME}-v${APP_VERSION}.apk"
+          NEW_APK_NAME="${PROJECT_NAME}-v${APP_VERSION}-debugSigned.apk"
           NEW_APK_PATH="./release_artifacts/${NEW_APK_NAME}"
 
           mv "$OLD_APK_PATH" "$NEW_APK_PATH"
@@ -184,7 +184,7 @@ jobs:
           tag_name: "v${{ steps.parse_version_release.outputs.APP_VERSION }}"
           name: "${{ steps.parse_version_release.outputs.PROJECT_NAME }} Release v${{ steps.parse_version_release.outputs.APP_VERSION }}"
           body: |
-            New Android APK for version ${{ steps.parse_version_release.outputs.APP_VERSION }}.
+            New Android APK for version ${{ steps.parse_version_release.outputs.APP_VERSION }} (signed with debug key).
             Automatic release from GitHub Actions.
           draft: false
           prerelease: false

@@ -170,7 +170,19 @@ jobs:
           PROJECT_NAME="${{ steps.parse_version_release.outputs.PROJECT_NAME }}"
           APP_VERSION="${{ steps.parse_version_release.outputs.APP_VERSION }}"
           OLD_APK_PATH="./release_artifacts/universal.apk"
-          NEW_APK_NAME="${PROJECT_NAME}-v${APP_VERSION.APP_VERSION }}"
+          NEW_APK_NAME="${PROJECT_NAME}-v${APP_VERSION}.apk"
+          NEW_APK_PATH="./release_artifacts/${NEW_APK_NAME}"
+
+          mv "$OLD_APK_PATH" "$NEW_APK_PATH"
+          echo "New APK path: $NEW_APK_PATH"
+          echo "RELEASE_APK_PATH=$NEW_APK_PATH" >> "$GITHUB_OUTPUT"
+          echo "RELEASE_APK_NAME=$NEW_APK_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Create Release and Upload APK
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: "v${{ steps.parse_version_release.outputs.APP_VERSION }}"
+          name: "${{ steps.parse_version_release.outputs.PROJECT_NAME }} Release v${{ steps.parse_version_release.outputs.APP_VERSION }}"
           body: |
             New Android APK for version ${{ steps.parse_version_release.outputs.APP_VERSION }}.
             Automatic release from GitHub Actions.

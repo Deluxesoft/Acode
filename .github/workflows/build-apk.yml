@@ -1,6 +1,6 @@
 # Generate unsigned apk renaming it to the App name and version correct version (based on config.xml instead of git tags) also there is a step to check if the generated apk has the debuggable flag on or off
 
-name: Build Android Unsigned APK for Inspection/Specific Use
+name: Build Android Debug APK for Direct Install
 
 on:
   push:
@@ -10,16 +10,12 @@ on:
     branches:
       - main
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Specify a Git tag for the APK version (e.g., v1.0.0, 1.2.3). If empty, uses the latest tag.'
-        required: false
-        type: string
 
 permissions:
-  contents: write
+  contents: write # Grants permission to create and edit repository content (needed for releases)
 
 jobs:
+  # Job 1: Check spelling - Good practice for any project
   spell-check:
     timeout-minutes: 5
     name: Check spelling
@@ -34,6 +30,7 @@ jobs:
         with:
           config: ./_typos.toml
 
+  # Job 2: Linting and formatting - Good practice for any project
   quality:
     timeout-minutes: 5
     name: Linting and formatting
@@ -49,15 +46,16 @@ jobs:
       - name: Run Biome Checks
         run: biome ci .
 
+  # Job 3: Build Android APK - Optimized with caching and uses debug signing
   build-android-apk:
-    name: Build Android APK (Unsigned)
+    name: Build Android APK
     runs-on: ubuntu-latest
-    env:
+    env: # Define common environment variables for this job
       NODE_VERSION: '18'
       JAVA_VERSION: '17'
       ANDROID_API_LEVEL: '33'
       ANDROID_BUILD_TOOLS: '33.0.0'
-      ANDROID_SDK_ROOT: '/usr/local/lib/android/sdk'
+      ANDROID_SDK_ROOT: '/usr/local/lib/android/sdk' # Standard path on ubuntu-latest runners
 
     steps:
       - name: Checkout Repository Code
@@ -116,19 +114,43 @@ jobs:
           wget https://github.com/google/bundletool/releases/download/1.16.0/bundletool-all-1.16.0.jar -O bundletool.jar
           echo "BUNDLETOOL_JAR=$GITHUB_WORKSPACE/bundletool.jar" >> "$GITHUB_ENV"
 
-      - name: Generate APK from AAB (Unsigned)
+      - name: Generate APK from AAB (Signed with Debug Keystore)
         id: generate_apk_from_aab
         run: |
           AAB_PATH="${{ steps.locate_aab.outputs.AAB_PATH }}"
-          OUTPUT_APKS_PATH="app-unsigned.apks"
+          OUTPUT_APKS_PATH="app-debug.apks"
+
+          DEBUG_KEYSTORE_PATH="$HOME/.android/debug.keystore"
+          DEBUG_KEYSTORE_PASSWORD="android"
+          DEBUG_KEY_ALIAS="androiddebugkey"
+          DEBUG_KEY_PASSWORD="android"
+
+          if [ ! -f "$DEBUG_KEYSTORE_PATH" ]; then
+            echo "Warning: Debug keystore not found. Attempting to generate it."
+            keytool -genkeypair -v -keystore "$DEBUG_KEYSTORE_PATH" \
+              -alias "$DEBUG_KEY_ALIAS" -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$DEBUG_KEYSTORE_PASSWORD" -keypass "$DEBUG_KEY_PASSWORD" \
+              -dname "CN=Android Debug,O=Android,C=US"
+            echo "Debug keystore created."
+          fi
+
+          echo "Signing APK with Android debug keystore: $DEBUG_KEYSTORE_PATH"
+
           java -jar "${{ env.BUNDLETOOL_JAR }}" build-apks \
             --bundle="$AAB_PATH" \
             --output="$OUTPUT_APKS_PATH" \
-            --mode=universal
+            --mode=universal \
+            --ks="$DEBUG_KEYSTORE_PATH" \
+            --ks-pass="pass:$DEBUG_KEYSTORE_PASSWORD" \
+            --ks-key-alias="$DEBUG_KEY_ALIAS" \
+            --key-pass="pass:$DEBUG_KEY_PASSWORD"
+
           unzip "$OUTPUT_APKS_PATH" -d apks_output
+
           UNIVERSAL_APK_PATH=$(find apks_output -name "universal.apk" | head -n 1)
+
           if [ -z "$UNIVERSAL_APK_PATH" ]; then
-            echo "Error: Universal APK not found after bundletool conversion!"
+            echo "Error: Universal APK not found after bundletool conversion and signing!"
             ls -R apks_output
             exit 1
           fi
@@ -139,6 +161,7 @@ jobs:
         run: |
           APK_PATH="${{ steps.generate_apk_from_aab.outputs.APK_GENERATED_PATH }}"
           echo "Inspecting APK: $APK_PATH for debuggable flag..."
+
           AAPT2_PATH=$(find "${ANDROID_HOME}/build-tools/" -name "aapt2" -type f | head -n 1)
           if [ -z "$AAPT2_PATH" ]; then
               echo "Error: aapt2 executable not found. Please ensure Android SDK build-tools are correctly installed."
@@ -147,16 +170,22 @@ jobs:
               ls -l "${ANDROID_HOME}/build-tools/" || echo "Could not list build-tools directory."
               exit 1
           fi
+
           echo "Found aapt2 at: $AAPT2_PATH"
+
           MANIFEST_DUMP=$("$AAPT2_PATH" dump xmltree "$APK_PATH" --file AndroidManifest.xml)
+
           echo "--- AndroidManifest.xml relevant section ---"
           echo "$MANIFEST_DUMP" | grep 'android:debuggable' || echo "android:debuggable flag not found in manifest."
           echo "------------------------------------------"
+
           if echo "$MANIFEST_DUMP" | grep -q 'A: android:debuggable(0x0101000f)=(type 0x12)0xffffffff'; then
               echo "🔴 ERROR: The APK is debuggable! The android:debuggable flag is explicitly set to TRUE."
+              echo "This build will fail to ensure security for direct installs."
               exit 1
           else
               echo "✅ SUCCESS: The android:debuggable flag is NOT explicitly set to true."
+              echo "(For 'release' builds, the default is false if not explicitly true.)"
           fi
         env:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
@@ -175,7 +204,7 @@ jobs:
           PROJECT_NAME="${{ steps.parse_version.outputs.PROJECT_NAME }}"
           APP_VERSION="${{ steps.parse_version.outputs.APP_VERSION }}"
           OLD_APK_PATH="./apks_output/universal.apk"
-          NEW_APK_NAME="${PROJECT_NAME}-v${APP_VERSION}-unsigned.apk"
+          NEW_APK_NAME="${PROJECT_NAME}-v${APP_VERSION}-debug-signed.apk"
           NEW_APK_PATH="./release_artifacts/${NEW_APK_NAME}"
           mkdir -p ./release_artifacts
           mv "$OLD_APK_PATH" "$NEW_APK_PATH"
@@ -186,10 +215,11 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-unsigned-apk
+          name: android-debug-apk
           path: ${{ steps.prepare_apk.outputs.RELEASE_APK_PATH }}
           retention-days: 7
 
+  # Job 4: Create GitHub Release
   create-release:
     name: Create GitHub Release
     needs: build-android-apk
@@ -205,7 +235,7 @@ jobs:
       - name: Download APK Artifact
         uses: actions/download-artifact@v4
         with:
-          name: android-unsigned-apk
+          name: android-debug-apk
           path: ./release_artifacts
 
       - name: Parse version from config.xml
@@ -221,7 +251,7 @@ jobs:
         run: |
           PROJECT_NAME="${{ steps.parse_version_release.outputs.PROJECT_NAME }}"
           APP_VERSION="${{ steps.parse_version_release.outputs.APP_VERSION }}"
-          APK_PATH="./release_artifacts/${PROJECT_NAME}-v${APP_VERSION}-unsigned.apk"
+          APK_PATH="./release_artifacts/${PROJECT_NAME}-v${APP_VERSION}-debug-signed.apk"
           echo "RELEASE_APK_PATH=$APK_PATH" >> "$GITHUB_OUTPUT"
           echo "RELEASE_APK_NAME=$(basename "$APK_PATH")" >> "$GITHUB_OUTPUT"
 
@@ -232,8 +262,8 @@ jobs:
           name: "${{ steps.parse_version_release.outputs.PROJECT_NAME }} Release v${{ steps.parse_version_release.outputs.APP_VERSION }}"
           body: |
             New Android APK for version ${{ steps.parse_version_release.outputs.APP_VERSION }}.
-            **This is an UNSIGNED BUILD.**
-            **It cannot be installed on a device without being signed first.**
+            **This is a DEBUG-SIGNED BUILD, intended for personal use or direct installation.**
+            **It is NOT for release on app stores.**
             Automatic release from GitHub Actions.
           draft: false
           prerelease: false

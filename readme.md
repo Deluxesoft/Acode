@@ -1,3 +1,5 @@
+(Forked Acode for Releasing Unsigned and Signed with Debug key apks by the Git Platform Automatically)
+
 # Acode - Code Editor for Android
 
 <p align="center">

@@ -1,4 +1,4 @@
-# Generate unsigned apk renaming it to the App name and version correct version (based on config.xml instead of git tags) also there is a step to check if the generated apk has the debuggable flag on or off
+# Generate debug key signed apk renaming it to the App name and version correct version (based on config.xml instead of git tags) also there is a step to check if the generated apk has the debuggable flag on or off
 
 name: Build Android Debug APK for Direct Install
 

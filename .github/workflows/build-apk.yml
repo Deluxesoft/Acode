@@ -1,12 +1,14 @@
 # Generate signed apk renaming it to the App name and version based on git tags. also there is a step to check if the generated apk has the debuggable flag on or off
 
-name: Build Android Unsigned APK (Acode)
+name: Build Android Unsigned APK for Inspection/Specific Use
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       tag:
@@ -52,7 +54,7 @@ jobs:
           echo "Determined version: $VERSION"
           echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
 
-          # Set config.xml version
+          # Set config.xml version (Cordova main source of truth)
           if [ -f config.xml ]; then
             sed -i "s/version=\"[^\"]*\"/version=\"$VERSION\"/" config.xml
             echo "Set config.xml version to $VERSION"
@@ -104,18 +106,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-node-
 
-      - name: Set up Node.js
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Set up Java Development Kit (JDK)
+      - name: Set up Java Development Kit (JDK) ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: ${{ env.JAVA_VERSION }}
 
-      - name: Setup Android SDK
+      - name: Setup Android SDK (API Level ${{ env.ANDROID_API_LEVEL }}, Build Tools ${{ env.ANDROID_BUILD_TOOLS }})
         uses: android-actions/setup-android@v2
         with:
           api-level: ${{ env.ANDROID_API_LEVEL }}
@@ -167,7 +169,6 @@ jobs:
         id: parse_version
         run: |
           VERSION=$(grep -oP 'version="\K[^"]+' config.xml | head -n1)
-          echo "CONFIG_VERSION=$VERSION" >> $GITHUB_ENV
           echo "config_version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Rename APK and Prepare for Upload

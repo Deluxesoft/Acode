@@ -1,12 +1,9 @@
 # Generate signed apk renaming it to the App name and version based on git tags. also there is a step to check if the generated apk has the debuggable flag on or off
 
-name: Build Android Unsigned APK for Inspection/Specific Use
+name: Build and Release Android Unsigned APK
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
     branches:
       - main
   workflow_dispatch:
@@ -21,7 +18,7 @@ permissions:
 
 jobs:
   build-android-apk:
-    name: Build Android APK (Unsigned)
+    name: Build and Release Android APK (Unsigned)
     runs-on: ubuntu-latest
     env:
       NODE_VERSION: '18'
@@ -45,8 +42,7 @@ jobs:
           set -e
           VERSION="${{ github.event.inputs.tag }}"
           if [ -z "$VERSION" ]; then
-            VERSION=$(git describe --tags --abbrev=0 --match "v[0-9]*" 2>/dev/null | sed 's/^v//' || \
-                      git describe --tags --abbrev=0 --match "[0-9]*" 2>/dev/null | sed 's/^v//')
+            VERSION=$(git describe --tags --abbrev=0 --match "v[0-9]*" 2>/dev/null | sed | sed 's/^v//')
             [ -z "$VERSION" ] && VERSION="0.0.1"
           else
             VERSION=$(echo "$VERSION" | sed 's/^v//')
@@ -54,7 +50,7 @@ jobs:
           echo "Determined version: $VERSION"
           echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
 
-          # Set config.xml version (Cordova main source of truth)
+          # Set config.xml version
           if [ -f config.xml ]; then
             sed -i "s/version=\"[^\"]*\"/version=\"$VERSION\"/" config.xml
             echo "Set config.xml version to $VERSION"
@@ -138,7 +134,6 @@ jobs:
             ls -R .
             exit 1
           fi
-          echo "Found AAB at: $AAB_PATH"
           echo "AAB_PATH=$AAB_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Install Google Bundletool
@@ -162,7 +157,6 @@ jobs:
             ls -R apks_output
             exit 1
           fi
-          echo "Found universal APK at: $UNIVERSAL_APK_PATH"
           echo "APK_GENERATED_PATH=$UNIVERSAL_APK_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Parse version from config.xml for APK name
@@ -181,13 +175,18 @@ jobs:
           NEW_APK_PATH="./release_artifacts/${NEW_APK_NAME}"
           mkdir -p ./release_artifacts
           cp "$OLD_APK_PATH" "$NEW_APK_PATH"
-          echo "Renamed APK to: $NEW_APK_PATH"
           echo "RELEASE_APK_PATH=$NEW_APK_PATH" >> "$GITHUB_OUTPUT"
           echo "RELEASE_APK_NAME=$NEW_APK_NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+      - name: Create GitHub Release and upload APK
+        uses: softprops/action-gh-release@v2
         with:
-          name: android-unsigned-apk
-          path: ${{ steps.prepare_apk.outputs.RELEASE_APK_PATH }}
-          retention-days: 7
+          tag_name: v${{ steps.parse_version.outputs.config_version }}
+          name: "Acode v${{ steps.parse_version.outputs.config_version }}"
+          body: |
+            Automated release for Acode version ${{ steps.parse_version.outputs.config_version }}.
+            - APK is unsigned and universal.
+            - Download and sign with your keystore before publishing.
+          files: ${{ steps.prepare_apk.outputs.RELEASE_APK_PATH }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

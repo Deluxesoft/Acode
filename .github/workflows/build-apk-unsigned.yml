@@ -1,4 +1,5 @@
-# Generate unsigned apk renaming it to the App name and version correct version (based on config.xml instead of git tags) also there is a step to check if the generated apk has the debuggable flag on or off
+# (modified for provenance verification)
+# Acode: Generate unsigned apk renaming it to the App name and version correct version (based on config.xml instead of git tags) also there is a step to check if the generated apk has the debuggable flag on or off
 
 name: Build Android Unsigned APK for Inspection/Specific Use
 
@@ -18,6 +19,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+
 
 jobs:
   spell-check:
@@ -226,7 +229,7 @@ jobs:
           echo "RELEASE_APK_NAME=$(basename "$APK_PATH")" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release and Upload APK
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: "v${{ steps.parse_version_release.outputs.APP_VERSION }}"
           name: "${{ steps.parse_version_release.outputs.PROJECT_NAME }} Release v${{ steps.parse_version_release.outputs.APP_VERSION }}"

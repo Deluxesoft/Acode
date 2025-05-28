@@ -1,4 +1,5 @@
-# Generate debug key signed apk renaming it to the App name and version correct version (based on config.xml instead of git tags) also there is a step to check if the generated apk has the debuggable flag on or off
+# (modified for provenance verification)
+# Acode: Generate debug key signed apk renaming it to the App name and version correct version (based on config.xml instead of git tags) also there is a step to check if the generated apk has the debuggable flag on or off
 
 name: Build Android Debug APK for Direct Install
 
@@ -13,6 +14,7 @@ on:
 
 permissions:
   contents: write # Grants permission to create and edit repository content (needed for releases)
+  id-token: write
 
 jobs:
   # Job 1: Check spelling - Good practice for any project
@@ -256,7 +258,7 @@ jobs:
           echo "RELEASE_APK_NAME=$(basename "$APK_PATH")" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release and Upload APK
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: "v${{ steps.parse_version_release.outputs.APP_VERSION }}"
           name: "${{ steps.parse_version_release.outputs.PROJECT_NAME }} Release v${{ steps.parse_version_release.outputs.APP_VERSION }}"
